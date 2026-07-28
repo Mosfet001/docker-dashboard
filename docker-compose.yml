@@ -1,0 +1,79 @@
+version: '3.9'
+
+# ─────────────────────────────────────────────────────────────
+#  Docker Dashboard — production compose
+#  Start: docker compose up -d --build
+#  Logs:  docker compose logs -f
+# ─────────────────────────────────────────────────────────────
+
+services:
+
+  # ── API server ──────────────────────────────────────────────
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: dd-server
+    restart: unless-stopped
+    environment:
+      PORT:             ${PORT:-3001}
+      JWT_SECRET:       ${JWT_SECRET:?JWT_SECRET must be set in .env}
+      JWT_EXPIRES:      ${JWT_EXPIRES:-24h}
+      DASHBOARD_USER:   ${DASHBOARD_USER:-admin}
+      DASHBOARD_PASS:   ${DASHBOARD_PASS:-changeme}
+      CLIENT_ORIGIN:    ${CLIENT_ORIGIN:-http://localhost}
+      DOCKER_SOCKET:    /var/run/docker.sock
+      DISABLE_AUTH:     ${DISABLE_AUTH:-false}
+    volumes:
+      # Mount Docker socket so the API can control the host Docker daemon
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    networks:
+      - dashboard
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:3001/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+
+  # ── React client ─────────────────────────────────────────────
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    container_name: dd-client
+    restart: unless-stopped
+    depends_on:
+      server:
+        condition: service_healthy
+    networks:
+      - dashboard
+
+  # ── nginx reverse proxy ──────────────────────────────────────
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: dd-nginx
+    restart: unless-stopped
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+    volumes:
+      - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
+      - ./nginx/certs:/etc/nginx/certs:ro       # place TLS certs here
+      - nginx_logs:/var/log/nginx
+    depends_on:
+      - client
+      - server
+    networks:
+      - dashboard
+    healthcheck:
+      test: ["CMD", "nginx", "-t"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  nginx_logs:
+
+networks:
+  dashboard:
+    driver: bridge
